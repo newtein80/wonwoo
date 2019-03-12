@@ -1,0 +1,88 @@
+Spring boot ApplicationContext
+인터넷을 보다보니까 좋은 자료가 있어 한번 보게 되었다.
+Spring ApplicationContext
+스터디 하는 그룹인데 아라한사님도 여기 계신다.
+보다보니 Spring boot는 어떤식으로 되는지 궁금했다.
+Spring boot는 기본적으로 AnnotationConfigApplicationContext을 사용하고 있다.
+Web이라면 AnnotationConfigEmbeddedWebApplicationContext을 사용한다.
+물론 둘다 아무 설정이 안되어 있을때 이야기다.
+
+protected ConfigurableApplicationContext createApplicationContext() {
+    Class<?> contextClass = this.applicationContextClass;
+    if (contextClass == null) {
+        try {
+            contextClass = Class.forName(this.webEnvironment
+                    ? DEFAULT_WEB_CONTEXT_CLASS : DEFAULT_CONTEXT_CLASS);
+        }
+        catch (ClassNotFoundException ex) {
+            throw new IllegalStateException(
+            "Unable create a default ApplicationContext, "
+                + "please specify an ApplicationContextClass", ex);
+        }
+    }
+    return (ConfigurableApplicationContext) BeanUtils.instantiate(contextClass);
+}
+이렇게 보면 알 수 있다.
+그런데 인스턴스를 바로 생성하기 때문에 register(annotatedClasses) 빈의 메타정보를 담는 이 메소드를 호출 하지 않는다. 아니면 java 설정 중 register(annotatedClasses)을 명시적으로 호출해 줘야하는데…
+메인이 되는 클래스를 설정해야되는데..어디서하지? 어딘가엔 있을거라고 장담하고 찾아봤다.
+SpringbootApplication 클래스에 보면 createAndRefreshContext 함수가 있다. 여기가 아주 중요한 역할을 해주는 함수인듯 하다.
+여기서 load라는 함수를 따라가보면 계속 load다. 계속 load 만 따라가면 된다. 찾았다 요놈
+
+private int load(Class<?> source) {
+    if (isGroovyPresent()) {
+        // Any GroovyLoaders added in beans{} DSL can contribute beans here
+        if (GroovyBeanDefinitionSource.class.isAssignableFrom(source)) {
+            GroovyBeanDefinitionSource loader = BeanUtils.instantiateClass(source,
+                    GroovyBeanDefinitionSource.class);
+            load(loader);
+        }
+    }
+    if (isComponent(source)) {
+               //잡았다 요놈
+        this.annotatedReader.register(source); 
+        return 1;
+    }
+    return 0;
+}
+register 함수를 따라가보면 마지막 registerBean라는 메소드가 있는데
+BeanDefinitionReaderUtils.registerBeanDefinition(definitionHolder, this.registry);
+요놈이 빈의 메타 정보를 저장하는놈이다. 아마 저기 링크 걸어둔 곳에 자세히 나와있다.
+그리고 createAndRefreshContext 메소드에 refresh 메소드도 호출 하고 있다.
+그래서 한번 따라가봤다. refresh에서 많은 일을 하고 있다.
+refresh에 invokeBeanFactoryPostProcessors를 따라가 보았다. 복잡하다..ㅜㅜ
+
+PostProcessorRegistrationDelegate.invokeBeanFactoryPostProcessors(beanFactory, getBeanFactoryPostProcessors());
+안으로 들어가서 약 100 번째줄에
+
+invokeBeanDefinitionRegistryPostProcessors(priorityOrderedPostProcessors, registry)
+이런 메소드가 존재한다. 계속따라가보면 따라가기 힘들다.
+
+for (BeanDefinitionRegistryPostProcessor postProcessor : postProcessors) {
+    postProcessor.postProcessBeanDefinitionRegistry(registry);
+}
+구현체는 ConfigurationClassPostProcessor로 가면된다.
+함수 맨 밑에 가면 processConfigBeanDefinitions 메소드가 있는데 여러작업을 한다. 순서를 정렬하고, @Configuration 클래스도 파싱하는 듯하다.
+그중에 parser.parse(candidates) 메소드는 ComponentScan 하는곳을 찾을수 있다. 따라가보자
+parse -> processConfigurationClass -> doProcessConfigurationClass 여기 설정 클래스들이 모여있다.
+이쁘게 주석도 해놨다.
+@Import, @Bean, @ImportResource, @PropertySource등을 찾아서 메타정보를 등록한다.
+doProcessConfigurationClass 함수는 재귀호출하는듯 하다.
+스캔대상의 클래스들을 하나씩 다 조사한다.
+그리고 configurationClasses에 Map으로 설정클래스랑 클래스에 설정된 빈(BeanMethod), 기타 다른 설정 빈들이 담아둔다.
+invokeBeanFactoryPostProcessors 뭔가 많은 일은한다. 복잡복잡
+여기 안에서 BeanFactoryPostProcessor와 BeanDefinitionRegistryPostProcessor 의 구현체들도 호출한다.
+BeanDefinitionRegistryPostProcessor 먼저 호출 되고 그다음에 BeanFactoryPostProcessor 호출 된다.
+ConfigurationClassPostProcessor 도 BeanDefinitionRegistryPostProcessor의 구현체다.
+순서에 따라 각각 세번정도 호출 되는거 같다.(PriorityOrdered, Ordered)
+
+private static void invokeBeanDefinitionRegistryPostProcessors(
+        Collection<? extends BeanDefinitionRegistryPostProcessor> postProcessors, BeanDefinitionRegistry registry) {
+
+    for (BeanDefinitionRegistryPostProcessor postProcessor : postProcessors) {
+        postProcessor.postProcessBeanDefinitionRegistry(registry);
+    }
+}
+refresh의 finishBeanFactoryInitialization Instantiate all remaining (non-lazy-init) singletons. 주석으로 이렇게 되어있다.
+아마 인스턴스 안된 빈들을 이때 인스턴스화 하는거 같다.(Lazy 객체가 아닌 것만)
+이렇게 Spring boot는 Application의 관리 및 설정에 관하여 알아봤다.
+인스턴스화 하는건 저기 링크에 가보면 자세히 나와있다! 링크참조!
